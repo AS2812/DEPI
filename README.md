@@ -96,4 +96,5 @@ This project focuses on analyzing and forecasting daily ridership data provided 
 ## How to Use This Repository
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-username/mta-ridership-project.git
+   git clone https:[//github.com/your-username/mta-ridership-project.git](https://github.com/AS2812/DEPI.git)
+
