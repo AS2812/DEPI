@@ -1,244 +1,229 @@
------------------------------------------------------------------------
--- MTA Daily Ridership Data Cleaning and Preprocessing Script
--- Based on the MTA Daily Ridership Data Overview [&#8203;:contentReference[oaicite:0]{index=0}] and
--- the Data Cleaning Process [&#8203;:contentReference[oaicite:1]{index=1}].
---
--- This script performs the following:
---   • Drops existing staging and cleaned tables.
---   • Creates a staging table that simulates raw CSV input.
---   • Inserts sample data that reflects common issues:
---         - Missing values (ride_date_str, station_id, daily_ridership, etc.)
---         - Negative or out-of-range numeric values.
---         - Extra spaces in text fields.
---         - Duplicate records.
---         - Additional columns for various ridership modes and pre-pandemic comparison.
---   • Creates a final cleaned table with proper data types and a composite primary key.
---   • Cleans the data by:
---         - Converting string dates to DATE.
---         - Filtering out rows missing critical values.
---         - Adjusting numeric values (setting NULL/negative values to 0 and capping extreme values).
---         - Trimming extra spaces.
---         - Removing duplicate records using a window function.
---   • Creates indexes for performance.
---   • Performs data quality checks.
---
--- NOTE:
--- The MTA Daily Ridership dataset covers multiple agencies (NYCT, MTABC, LIRR, Metro-North,
--- Access-A-Ride, and Bridges & Tunnels). If your raw data includes further fields, adjust the schema accordingly.
------------------------------------------------------------------------
+-- ============================================================
+-- SQLite Script: Clean & Retrieve Data from MTA_Daily_Ridership
+-- ============================================================
+-- This script:
+--   1. Reads from [MTA_Daily_Ridership], which has columns:
+--        "Date",
+--        "Subways:_Total_Estimated_Ridership",
+--        "Subways:_%_of_Comparable_Pre-Pandemic_Day",
+--        "Buses:_Total_Estimated_Ridership",
+--        "Buses:_%_of_Comparable_Pre-Pandemic_Day",
+--        "LIRR:_Total_Estimated_Ridership",
+--        "LIRR:_%_of_Comparable_Pre-Pandemic_Day",
+--        "Metro-North:_Total_Estimated_Ridership",
+--        "Metro-North:_%_of_Comparable_Pre-Pandemic_Day",
+--        "Access-A-Ride:_Total_Scheduled_Trips",
+--        "Access-A-Ride:_%_of_Comparable_Pre-Pandemic_Day",
+--        "Bridges_and_Tunnels:_Total_Traffic",
+--        "Bridges_and_Tunnels:_%_of_Comparable_Pre-Pandemic_Day",
+--        "Staten_Island_Railway:_Total_Estimated_Ridership",
+--        "Staten_Island_Railway:_%_of_Comparable_Pre-Pandemic_Day"
+--   2. Cleans numeric fields (NULL/negative → 0, caps large values).
+--   3. Converts "Date" (TEXT) to DATE.
+--   4. Removes duplicates by date (optional).
+--   5. Runs data quality checks (optional).
+-- ============================================================
 
------------------------------------------------------------------------
--- DROP EXISTING TABLES (if they exist)
------------------------------------------------------------------------
-DROP TABLE IF EXISTS MTA_Ridership_Staging;
-DROP TABLE IF EXISTS MTA_Ridership_Cleaned;
-
------------------------------------------------------------------------
--- 1. CREATE A STAGING TABLE TO IMPORT THE RAW CSV DATA
---    (Assume the CSV data is imported with ride_date stored as a string)
------------------------------------------------------------------------
-CREATE TABLE MTA_Ridership_Staging (
-    ride_date_str              VARCHAR(50),  -- Raw ride date as a string (e.g., '2025-02-01')
-    station_id                 INT,          -- Station identifier (critical for uniqueness)
-    daily_ridership            INT,          -- Overall daily ridership count
-    raw_text_field             VARCHAR(255), -- A text field that may have extra spaces or formatting issues
-    subway_ridership           INT,          -- Subway ridership count
-    bus_ridership              INT,          -- Bus ridership count
-    lirr_ridership             INT,          -- Long Island Rail Road ridership count
-    metro_north_ridership      INT,          -- Metro-North Railroad ridership count
-    access_a_ride_ridership    INT,          -- Access-A-Ride ridership count
-    bridges_tunnels_ridership  INT,          -- Bridges and Tunnels ridership/traffic count
-    pre_pandemic_comparison    REAL          -- Pre-pandemic comparison percentage (e.g., 95.50)
-);
-
------------------------------------------------------------------------
--- Insert sample data into the staging table.
--- The sample rows simulate various data issues:
---   • Row 1: A valid row with extra spaces in text fields.
---   • Row 2: Missing ride_date_str (will be excluded).
---   • Row 3: Missing station_id (will be excluded).
---   • Row 4: Negative ridership values (will be set to 0).
---   • Row 5 & 6: Ridership values above threshold and duplicate record (capped and de-duplicated).
---   • Row 7: Missing ridership values (will be set to 0).
------------------------------------------------------------------------
-INSERT INTO MTA_Ridership_Staging 
-  (ride_date_str, station_id, daily_ridership, raw_text_field, subway_ridership, bus_ridership, lirr_ridership, metro_north_ridership, access_a_ride_ridership, bridges_tunnels_ridership, pre_pandemic_comparison)
-VALUES
-  ('2025-02-01', 101, 5000, '  Station A  ', 3000, 2000, 0, 0, 0, 0, 95.50),
-  (NULL,         102, 3000, 'Station B',       2500, 500,  NULL, NULL, NULL, NULL, 98.00),          -- Missing ride_date_str; filtered out.
-  ('2025-02-03', NULL, 4500, 'Station C ',      4000, 500,  300, 200, 100, 50, 97.25),          -- Missing station_id; filtered out.
-  ('2025-02-04', 103, -50,  ' Station D',      -100, 0,    0, 0, 0, 0, -5.00),            -- Negative values; set to 0.
-  ('2025-02-05', 104, 150000, 'Station E',      80000, 70000, 50000, 60000, 40000, 30000, 120.75), -- Exceeds threshold; capped.
-  ('2025-02-05', 104, 150000, 'Station E',      80000, 70000, 50000, 60000, 40000, 30000, 120.75), -- Duplicate record.
-  ('2025-02-06', 105, NULL,   ' Station F',     NULL,  NULL,  NULL,  NULL,  NULL,  NULL, NULL);   -- Missing ridership; set to 0.
-
------------------------------------------------------------------------
--- 2. CREATE THE FINAL (CLEANED) TABLE WITH PROPER DATA TYPES AND CONSTRAINTS
---    This table stores the cleaned data ready for analysis.
------------------------------------------------------------------------
-CREATE TABLE MTA_Ridership_Cleaned (
-    ride_date                 DATE NOT NULL,      -- Cleaned ride date (DATE type)
-    station_id                INT NOT NULL,       -- Station identifier
-    daily_ridership           INT,                -- Overall cleaned daily ridership count
-    raw_text_field            VARCHAR(255),       -- Cleaned text field (trimmed)
-    subway_ridership          INT,                -- Cleaned subway ridership count
-    bus_ridership             INT,                -- Cleaned bus ridership count
-    lirr_ridership            INT,                -- Cleaned LIRR ridership count
-    metro_north_ridership     INT,                -- Cleaned Metro-North ridership count
-    access_a_ride_ridership   INT,                -- Cleaned Access-A-Ride ridership count
-    bridges_tunnels_ridership INT,                -- Cleaned Bridges & Tunnels ridership count
-    pre_pandemic_comparison   REAL,               -- Cleaned pre-pandemic comparison percentage
-    PRIMARY KEY (ride_date, station_id)
-);
-
------------------------------------------------------------------------
--- 3. DELETE ANY EXISTING RECORDS FROM THE CLEANED TABLE
---    (Ensure the cleaned table is empty before new data is inserted.)
------------------------------------------------------------------------
-DELETE FROM MTA_Ridership_Cleaned;
-
------------------------------------------------------------------------
--- 4. CLEAN & INSERT DATA INTO THE FINAL TABLE WITH DUPLICATE REMOVAL
---
--- This step performs the following cleaning operations:
---   a) Converts ride_date_str to a proper DATE (rows with missing/empty ride_date_str are excluded).
---   b) Filters out rows with missing station_id.
---   c) Cleans numeric fields:
---         - For overall and mode-specific ridership values: 
---             * If NULL, set to 0.
---             * If negative, set to 0.
---             * If above 100000, cap at 100000.
---         - For pre_pandemic_comparison:
---             * If NULL, set to 0.
---             * If negative, set to 0.
---             * If above 200, cap at 200.
---   d) Trims extra spaces from raw_text_field.
---   e) Uses a window function (ROW_NUMBER()) to remove duplicate records.
------------------------------------------------------------------------
 WITH CleanedData AS (
     SELECT
-        CAST(ride_date_str AS DATE) AS ride_date,
-        station_id,
-        -- Clean overall daily ridership
+        -- Convert "Date" from TEXT to DATE
+        DATE("Date") AS ride_date,
+
+        -- 1) Clean Subways:_Total_Estimated_Ridership
         CASE
-            WHEN daily_ridership IS NULL THEN 0
-            WHEN daily_ridership < 0 THEN 0
-            WHEN daily_ridership > 100000 THEN 100000
-            ELSE daily_ridership
-        END AS daily_ridership,
-        TRIM(raw_text_field) AS raw_text_field,
-        -- Clean subway ridership
+            WHEN "Subways:_Total_Estimated_Ridership" IS NULL
+                 OR "Subways:_Total_Estimated_Ridership" < 0
+            THEN 0
+            WHEN "Subways:_Total_Estimated_Ridership" > 100000
+            THEN 100000
+            ELSE "Subways:_Total_Estimated_Ridership"
+        END AS subways_ridership,
+
+        -- 2) Clean Subways:_%_of_Comparable_Pre-Pandemic_Day
         CASE
-            WHEN subway_ridership IS NULL THEN 0
-            WHEN subway_ridership < 0 THEN 0
-            WHEN subway_ridership > 100000 THEN 100000
-            ELSE subway_ridership
-        END AS subway_ridership,
-        -- Clean bus ridership
+            WHEN "Subways:_%_of_Comparable_Pre-Pandemic_Day" IS NULL
+                 OR "Subways:_%_of_Comparable_Pre-Pandemic_Day" < 0
+            THEN 0
+            WHEN "Subways:_%_of_Comparable_Pre-Pandemic_Day" > 200
+            THEN 200
+            ELSE "Subways:_%_of_Comparable_Pre-Pandemic_Day"
+        END AS subways_pct_of_pre,
+
+        -- 3) Clean Buses:_Total_Estimated_Ridership
         CASE
-            WHEN bus_ridership IS NULL THEN 0
-            WHEN bus_ridership < 0 THEN 0
-            WHEN bus_ridership > 100000 THEN 100000
-            ELSE bus_ridership
-        END AS bus_ridership,
-        -- Clean LIRR ridership
+            WHEN "Buses:_Total_Estimated_Ridership" IS NULL
+                 OR "Buses:_Total_Estimated_Ridership" < 0
+            THEN 0
+            WHEN "Buses:_Total_Estimated_Ridership" > 100000
+            THEN 100000
+            ELSE "Buses:_Total_Estimated_Ridership"
+        END AS buses_ridership,
+
+        -- 4) Clean Buses:_%_of_Comparable_Pre-Pandemic_Day
         CASE
-            WHEN lirr_ridership IS NULL THEN 0
-            WHEN lirr_ridership < 0 THEN 0
-            WHEN lirr_ridership > 100000 THEN 100000
-            ELSE lirr_ridership
+            WHEN "Buses:_%_of_Comparable_Pre-Pandemic_Day" IS NULL
+                 OR "Buses:_%_of_Comparable_Pre-Pandemic_Day" < 0
+            THEN 0
+            WHEN "Buses:_%_of_Comparable_Pre-Pandemic_Day" > 200
+            THEN 200
+            ELSE "Buses:_%_of_Comparable_Pre-Pandemic_Day"
+        END AS buses_pct_of_pre,
+
+        -- 5) Clean LIRR:_Total_Estimated_Ridership
+        CASE
+            WHEN "LIRR:_Total_Estimated_Ridership" IS NULL
+                 OR "LIRR:_Total_Estimated_Ridership" < 0
+            THEN 0
+            WHEN "LIRR:_Total_Estimated_Ridership" > 100000
+            THEN 100000
+            ELSE "LIRR:_Total_Estimated_Ridership"
         END AS lirr_ridership,
-        -- Clean Metro-North ridership
+
+        -- 6) Clean LIRR:_%_of_Comparable_Pre-Pandemic_Day
         CASE
-            WHEN metro_north_ridership IS NULL THEN 0
-            WHEN metro_north_ridership < 0 THEN 0
-            WHEN metro_north_ridership > 100000 THEN 100000
-            ELSE metro_north_ridership
-        END AS metro_north_ridership,
-        -- Clean Access-A-Ride ridership
+            WHEN "LIRR:_%_of_Comparable_Pre-Pandemic_Day" IS NULL
+                 OR "LIRR:_%_of_Comparable_Pre-Pandemic_Day" < 0
+            THEN 0
+            WHEN "LIRR:_%_of_Comparable_Pre-Pandemic_Day" > 200
+            THEN 200
+            ELSE "LIRR:_%_of_Comparable_Pre-Pandemic_Day"
+        END AS lirr_pct_of_pre,
+
+        -- 7) Clean Metro-North:_Total_Estimated_Ridership
         CASE
-            WHEN access_a_ride_ridership IS NULL THEN 0
-            WHEN access_a_ride_ridership < 0 THEN 0
-            WHEN access_a_ride_ridership > 100000 THEN 100000
-            ELSE access_a_ride_ridership
-        END AS access_a_ride_ridership,
-        -- Clean Bridges & Tunnels ridership
+            WHEN "Metro-North:_Total_Estimated_Ridership" IS NULL
+                 OR "Metro-North:_Total_Estimated_Ridership" < 0
+            THEN 0
+            WHEN "Metro-North:_Total_Estimated_Ridership" > 100000
+            THEN 100000
+            ELSE "Metro-North:_Total_Estimated_Ridership"
+        END AS mnr_ridership,
+
+        -- 8) Clean Metro-North:_%_of_Comparable_Pre-Pandemic_Day
         CASE
-            WHEN bridges_tunnels_ridership IS NULL THEN 0
-            WHEN bridges_tunnels_ridership < 0 THEN 0
-            WHEN bridges_tunnels_ridership > 100000 THEN 100000
-            ELSE bridges_tunnels_ridership
-        END AS bridges_tunnels_ridership,
-        -- Clean pre-pandemic comparison: cap values above 200.
+            WHEN "Metro-North:_%_of_Comparable_Pre-Pandemic_Day" IS NULL
+                 OR "Metro-North:_%_of_Comparable_Pre-Pandemic_Day" < 0
+            THEN 0
+            WHEN "Metro-North:_%_of_Comparable_Pre-Pandemic_Day" > 200
+            THEN 200
+            ELSE "Metro-North:_%_of_Comparable_Pre-Pandemic_Day"
+        END AS mnr_pct_of_pre,
+
+        -- 9) Clean Access-A-Ride:_Total_Scheduled_Trips
         CASE
-            WHEN pre_pandemic_comparison IS NULL THEN 0
-            WHEN pre_pandemic_comparison < 0 THEN 0
-            WHEN pre_pandemic_comparison > 200 THEN 200
-            ELSE pre_pandemic_comparison
-        END AS pre_pandemic_comparison,
-        -- Assign a row number for duplicate removal
+            WHEN "Access-A-Ride:_Total_Scheduled_Trips" IS NULL
+                 OR "Access-A-Ride:_Total_Scheduled_Trips" < 0
+            THEN 0
+            WHEN "Access-A-Ride:_Total_Scheduled_Trips" > 100000
+            THEN 100000
+            ELSE "Access-A-Ride:_Total_Scheduled_Trips"
+        END AS aar_scheduled_trips,
+
+        -- 10) Clean Access-A-Ride:_%_of_Comparable_Pre-Pandemic_Day
+        CASE
+            WHEN "Access-A-Ride:_%_of_Comparable_Pre-Pandemic_Day" IS NULL
+                 OR "Access-A-Ride:_%_of_Comparable_Pre-Pandemic_Day" < 0
+            THEN 0
+            WHEN "Access-A-Ride:_%_of_Comparable_Pre-Pandemic_Day" > 200
+            THEN 200
+            ELSE "Access-A-Ride:_%_of_Comparable_Pre-Pandemic_Day"
+        END AS aar_pct_of_pre,
+
+        -- 11) Clean Bridges_and_Tunnels:_Total_Traffic
+        CASE
+            WHEN "Bridges_and_Tunnels:_Total_Traffic" IS NULL
+                 OR "Bridges_and_Tunnels:_Total_Traffic" < 0
+            THEN 0
+            WHEN "Bridges_and_Tunnels:_Total_Traffic" > 100000
+            THEN 100000
+            ELSE "Bridges_and_Tunnels:_Total_Traffic"
+        END AS bridges_tunnels_traffic,
+
+        -- 12) Clean Bridges_and_Tunnels:_%_of_Comparable_Pre-Pandemic_Day
+        CASE
+            WHEN "Bridges_and_Tunnels:_%_of_Comparable_Pre-Pandemic_Day" IS NULL
+                 OR "Bridges_and_Tunnels:_%_of_Comparable_Pre-Pandemic_Day" < 0
+            THEN 0
+            WHEN "Bridges_and_Tunnels:_%_of_Comparable_Pre-Pandemic_Day" > 200
+            THEN 200
+            ELSE "Bridges_and_Tunnels:_%_of_Comparable_Pre-Pandemic_Day"
+        END AS bridges_tunnels_pct_of_pre,
+
+        -- 13) Clean Staten_Island_Railway:_Total_Estimated_Ridership
+        CASE
+            WHEN "Staten_Island_Railway:_Total_Estimated_Ridership" IS NULL
+                 OR "Staten_Island_Railway:_Total_Estimated_Ridership" < 0
+            THEN 0
+            WHEN "Staten_Island_Railway:_Total_Estimated_Ridership" > 100000
+            THEN 100000
+            ELSE "Staten_Island_Railway:_Total_Estimated_Ridership"
+        END AS sir_ridership,
+
+        -- 14) Clean Staten_Island_Railway:_%_of_Comparable_Pre-Pandemic_Day
+        CASE
+            WHEN "Staten_Island_Railway:_%_of_Comparable_Pre-Pandemic_Day" IS NULL
+                 OR "Staten_Island_Railway:_%_of_Comparable_Pre-Pandemic_Day" < 0
+            THEN 0
+            WHEN "Staten_Island_Railway:_%_of_Comparable_Pre-Pandemic_Day" > 200
+            THEN 200
+            ELSE "Staten_Island_Railway:_%_of_Comparable_Pre-Pandemic_Day"
+        END AS sir_pct_of_pre,
+
+        -- (Optional) Remove duplicates by date
         ROW_NUMBER() OVER (
-            PARTITION BY CAST(ride_date_str AS DATE), station_id
-            ORDER BY ride_date_str
+            PARTITION BY DATE("Date")
+            ORDER BY "Date"
         ) AS rn
-    FROM MTA_Ridership_Staging
-    WHERE station_id IS NOT NULL
-      AND ride_date_str IS NOT NULL
-      AND ride_date_str <> ''
+
+    FROM MTA_Daily_Ridership
 )
-INSERT INTO MTA_Ridership_Cleaned 
-    (ride_date, station_id, daily_ridership, raw_text_field, subway_ridership, bus_ridership, lirr_ridership, metro_north_ridership, access_a_ride_ridership, bridges_tunnels_ridership, pre_pandemic_comparison)
 SELECT
     ride_date,
-    station_id,
-    daily_ridership,
-    raw_text_field,
-    subway_ridership,
-    bus_ridership,
+    subways_ridership,
+    subways_pct_of_pre,
+    buses_ridership,
+    buses_pct_of_pre,
     lirr_ridership,
-    metro_north_ridership,
-    access_a_ride_ridership,
-    bridges_tunnels_ridership,
-    pre_pandemic_comparison
+    lirr_pct_of_pre,
+    mnr_ridership,
+    mnr_pct_of_pre,
+    aar_scheduled_trips,
+    aar_pct_of_pre,
+    bridges_tunnels_traffic,
+    bridges_tunnels_pct_of_pre,
+    sir_ridership,
+    sir_pct_of_pre
 FROM CleanedData
+-- Remove duplicates by date (keep only the first row):
 WHERE rn = 1;
 
------------------------------------------------------------------------
--- 5. ADDITIONAL CLEANING STEPS & PERFORMANCE OPTIMIZATIONS
------------------------------------------------------------------------
--- a) Conversion of string dates is handled above.
-    
--- b) Create indexes on key columns to improve query performance on filtering and joins.
-CREATE INDEX idx_station_id ON MTA_Ridership_Cleaned(station_id);
-CREATE INDEX idx_ride_date  ON MTA_Ridership_Cleaned(ride_date);
+-- ============================================================
+-- STEP 3: OPTIONAL - DATA QUALITY CHECKS
+-- ============================================================
 
--- c) Example: Retrieve all records where overall daily ridership is above the average.
+-- 1) Check for an erroneous ride_date, e.g. '1900-01-01'
 SELECT *
-FROM MTA_Ridership_Cleaned
-WHERE daily_ridership > (
-    SELECT AVG(daily_ridership)
-    FROM MTA_Ridership_Cleaned
-);
+FROM MTA_Daily_Ridership
+WHERE DATE("Date") = '1900-01-01';
 
------------------------------------------------------------------------
--- 6. ADDITIONAL DATA QUALITY CHECKS
------------------------------------------------------------------------
--- 6.1 Verify that no records have a default ride_date ('1900-01-01').
---     (Since rows with missing ride_date_str are filtered out, this should return no rows.)
+-- 2) Identify negative or NULL ridership values in the raw table
 SELECT *
-FROM MTA_Ridership_Cleaned
-WHERE ride_date = '1900-01-01';
+FROM MTA_Daily_Ridership
+WHERE "Subways:_Total_Estimated_Ridership" < 0
+   OR "Buses:_Total_Estimated_Ridership" < 0
+   OR "LIRR:_Total_Estimated_Ridership" < 0
+   OR "Metro-North:_Total_Estimated_Ridership" < 0
+   OR "Access-A-Ride:_Total_Scheduled_Trips" < 0
+   OR "Bridges_and_Tunnels:_Total_Traffic" < 0
+   OR "Staten_Island_Railway:_Total_Estimated_Ridership" < 0;
 
--- 6.2 Ensure that text fields are properly trimmed (i.e., no leading or trailing whitespace).
+-- 3) Identify records with extremely high ridership values in the raw table
 SELECT *
-FROM MTA_Ridership_Cleaned
-WHERE raw_text_field LIKE ' %' OR raw_text_field LIKE '% ';
-
--- 6.3 Identify records with anomalous ridership values (e.g., 0 or capped at 100000).
-SELECT *
-FROM MTA_Ridership_Cleaned
-WHERE daily_ridership = 0 OR daily_ridership = 100000;
-
------------------------------------------------------------------------
--- END OF SCRIPT
------------------------------------------------------------------------
+FROM MTA_Daily_Ridership
+WHERE "Subways:_Total_Estimated_Ridership" > 100000
+   OR "Buses:_Total_Estimated_Ridership" > 100000
+   OR "LIRR:_Total_Estimated_Ridership" > 100000
+   OR "Metro-North:_Total_Estimated_Ridership" > 100000
+   OR "Access-A-Ride:_Total_Scheduled_Trips" > 100000
+   OR "Bridges_and_Tunnels:_Total_Traffic" > 100000
+   OR "Staten_Island_Railway:_Total_Estimated_Ridership" > 100000;
