@@ -165,16 +165,10 @@ mode_values = df_final.mode().iloc[0]
 print("Mode values:")
 print(mode_values)
 
-# =============================================================================
-# Step 7: Data Processing & SQL Integration (Optional)
-# =============================================================================
-# Create a SQL engine and export the cleaned data to a SQL database table (if needed)
-engine = create_engine('sqlite:///mta_clean.db')
-df_final.to_sql('mta_data_clean', engine, if_exists='replace', index=False)
-print("Cleaned data exported to SQL database table 'mta_data_clean'.")
+
 
 # =============================================================================
-# Step 8: Final Output & Reporting
+# Step 7: Final Output & Reporting
 # =============================================================================
 # Export the final cleaned DataFrame to a CSV file
 output_csv_path = r"C:\Users\karim\Downloads\MTA_Ridership_Cleaned.csv"
