@@ -49,7 +49,6 @@ CREATE TABLE MTA_Ridership_Staging (
     access_a_ride_ridership    INT,          -- Access-A-Ride ridership count
     bridges_tunnels_ridership  INT,          -- Bridges and Tunnels ridership/traffic count
     pre_pandemic_comparison    REAL          -- Pre-pandemic comparison percentage (e.g., 95.50)
-    -- Additional columns can be added as needed.
 );
 
 -----------------------------------------------------------------------
