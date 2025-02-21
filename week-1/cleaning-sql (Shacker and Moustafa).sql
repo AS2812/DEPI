@@ -103,7 +103,6 @@ UPDATE MTA_Daily_Ridership
 SET "Subways:_Total_Estimated_Ridership" = 0
 WHERE "Subways:_Total_Estimated_Ridership" IS NULL OR "Subways:_Total_Estimated_Ridership" = '';
 
--- Additional UPDATE statements can be added for other columns as needed.
 ------------------------------------------------------------
 -- End of Data Cleaning Script for MTA Daily Ridership Data
 ------------------------------------------------------------
