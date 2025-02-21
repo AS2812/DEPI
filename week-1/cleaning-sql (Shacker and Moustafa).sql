@@ -89,7 +89,6 @@ CREATE TABLE MTA_Ridership_Cleaned (
     bridges_tunnels_ridership INT,                -- Cleaned Bridges & Tunnels ridership count
     pre_pandemic_comparison   REAL,               -- Cleaned pre-pandemic comparison percentage
     PRIMARY KEY (ride_date, station_id)
-    -- Extend the schema if additional cleaned fields are required.
 );
 
 -----------------------------------------------------------------------
